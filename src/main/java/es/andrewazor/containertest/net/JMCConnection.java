@@ -1,9 +1,14 @@
 package es.andrewazor.containertest.net;
 
+import javax.management.JMX;
+import javax.management.MBeanServerConnection;
+import javax.management.ObjectName;
 import javax.management.remote.JMXServiceURL;
 
+import org.openjdk.jmc.rjmx.ConnectionException;
 import org.openjdk.jmc.rjmx.IConnectionHandle;
 import org.openjdk.jmc.rjmx.IConnectionListener;
+import org.openjdk.jmc.rjmx.ServiceNotAvailableException;
 import org.openjdk.jmc.rjmx.internal.DefaultConnectionHandle;
 import org.openjdk.jmc.rjmx.internal.JMXConnectionDescriptor;
 import org.openjdk.jmc.rjmx.internal.RJMXConnection;
@@ -48,6 +53,10 @@ public class JMCConnection {
 
     public void disconnect() {
         this.rjmxConnection.close();
+    }
+
+    public <T> T getMBean(ObjectName objectName, Class<T> klazz) throws ConnectionException, ServiceNotAvailableException {
+        return JMX.newMXBeanProxy(handle.getServiceOrThrow(MBeanServerConnection.class), objectName, klazz);
     }
 
     private RJMXConnection attemptConnect(String host, int port, int maxRetry) throws Exception {
