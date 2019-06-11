@@ -48,13 +48,13 @@ class PortScanCommand implements SerializableCommand {
 
     @Override
     public void execute(String[] args) throws Exception {
-        scan().forEach(m -> cw.println(String.format("%s -> %s", m.hostname, m.ip)));
+        scanOSO().forEach(m -> cw.println(String.format("%s -> %s", m.hostname, m.ip)));
     }
 
     @Override
     public Output<?> serializableExecute(String[] args) {
         try {
-            return new ListOutput<>(scan());
+            return new ListOutput<>(scanOSO());
         } catch (Exception e) {
             return new ExceptionOutput(e);
         }
@@ -90,6 +90,22 @@ class PortScanCommand implements SerializableCommand {
 
         latch.await();
         executor.shutdown();
+        return result;
+    }
+    
+    private List<IpHostMapping> scanOSO()  {
+        // OpenShift Online doesn't necessarily put all applications on
+        // the same /24 subnet. Hardcode demo components as temporary workaround.
+        List<IpHostMapping> result = new ArrayList<>();
+        final String[] hostnames = { "robotmaker", "robotshop", "robotcontroller" };
+        for (String hostname : hostnames) {
+            try {
+                InetAddress addr = InetAddress.getByName(hostname);
+                result.add(new IpHostMapping(addr.getHostAddress(), addr.getCanonicalHostName()));
+            } catch (UnknownHostException e) {
+                e.printStackTrace();
+            }
+        }
         return result;
     }
 
