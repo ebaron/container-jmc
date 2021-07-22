@@ -27,7 +27,7 @@
   <skipITs>${skipTests}</skipITs>
   <skipUTs>${skipTests}</skipUTs>
   <cryostat.minimal>false</cryostat.minimal>
-  <cryostat.imageStream>quay.io/cryostat/cryostat</cryostat.imageStream>
+  <cryostat.imageStream>quay.io/ebaron/cryostat</cryostat.imageStream>
   <cryostat.entrypoint>/app/entrypoint.sh</cryostat.entrypoint>
   <cryostat.mainClass>io.cryostat.Cryostat</cryostat.mainClass>
   <cryostat.rjmxPort>9091</cryostat.rjmxPort>
