@@ -37,10 +37,16 @@
  */
 package io.cryostat.net.openshift;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.Mockito.verify;
+
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -52,40 +58,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
-import io.cryostat.MainModule;
-import io.cryostat.core.log.Logger;
-import io.cryostat.core.sys.Environment;
-import io.cryostat.net.AuthenticationScheme;
-import io.cryostat.net.MissingEnvironmentVariableException;
-import io.cryostat.net.PermissionDeniedException;
-import io.cryostat.net.UserInfo;
-import io.cryostat.net.openshift.OpenShiftAuthManager.GroupResource;
-import io.cryostat.net.security.ResourceAction;
-import io.cryostat.net.security.ResourceType;
-import io.cryostat.net.security.ResourceVerb;
-import io.cryostat.util.resource.ClassPropertiesLoader;
-
-import com.github.benmanes.caffeine.cache.Scheduler;
-import com.google.gson.Gson;
-import io.fabric8.kubernetes.api.model.StatusCause;
-import io.fabric8.kubernetes.api.model.StatusDetails;
-import io.fabric8.kubernetes.api.model.authentication.TokenReview;
-import io.fabric8.kubernetes.api.model.authentication.TokenReviewBuilder;
-import io.fabric8.kubernetes.api.model.authorization.v1.SelfSubjectAccessReview;
-import io.fabric8.kubernetes.api.model.authorization.v1.SelfSubjectAccessReviewBuilder;
-import io.fabric8.kubernetes.client.dsl.NonNamespaceOperation;
-import io.fabric8.kubernetes.client.dsl.Resource;
-import io.fabric8.kubernetes.client.http.HttpClient;
-import io.fabric8.kubernetes.client.http.HttpRequest;
-import io.fabric8.kubernetes.client.http.HttpResponse;
-import io.fabric8.openshift.api.model.OAuthAccessToken;
-import io.fabric8.openshift.api.model.OAuthAccessTokenList;
-import io.fabric8.openshift.client.OpenShiftClient;
-import io.fabric8.openshift.client.server.mock.EnableOpenShiftMockClient;
-import io.fabric8.openshift.client.server.mock.OpenShiftMockServer;
-import io.fabric8.openshift.client.server.mock.OpenShiftMockServerExtension;
-import io.vertx.core.json.JsonObject;
-import okhttp3.mockwebserver.RecordedRequest;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.hamcrest.MatcherAssert;
 import org.hamcrest.Matchers;
@@ -103,6 +75,43 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+
+import com.github.benmanes.caffeine.cache.Scheduler;
+import com.google.gson.Gson;
+
+import io.cryostat.MainModule;
+import io.cryostat.core.log.Logger;
+import io.cryostat.core.sys.Environment;
+import io.cryostat.net.AuthenticationScheme;
+import io.cryostat.net.MissingEnvironmentVariableException;
+import io.cryostat.net.PermissionDeniedException;
+import io.cryostat.net.UserInfo;
+import io.cryostat.net.openshift.OpenShiftAuthManager.GroupResource;
+import io.cryostat.net.security.ResourceAction;
+import io.cryostat.net.security.ResourceType;
+import io.cryostat.net.security.ResourceVerb;
+import io.cryostat.util.resource.ClassPropertiesLoader;
+import io.fabric8.kubernetes.api.model.StatusCause;
+import io.fabric8.kubernetes.api.model.StatusDetails;
+import io.fabric8.kubernetes.api.model.authentication.TokenReview;
+import io.fabric8.kubernetes.api.model.authentication.TokenReviewBuilder;
+import io.fabric8.kubernetes.api.model.authorization.v1.SelfSubjectAccessReview;
+import io.fabric8.kubernetes.api.model.authorization.v1.SelfSubjectAccessReviewBuilder;
+import io.fabric8.kubernetes.client.KubernetesClientException;
+import io.fabric8.kubernetes.client.dsl.NonNamespaceOperation;
+import io.fabric8.kubernetes.client.dsl.Resource;
+import io.fabric8.kubernetes.client.http.HttpClient;
+import io.fabric8.kubernetes.client.http.HttpRequest;
+import io.fabric8.kubernetes.client.http.HttpResponse;
+import io.fabric8.openshift.api.model.OAuthAccessToken;
+import io.fabric8.openshift.api.model.OAuthAccessTokenList;
+import io.fabric8.openshift.client.OpenShiftClient;
+import io.fabric8.openshift.client.server.mock.EnableOpenShiftMockClient;
+import io.fabric8.openshift.client.server.mock.OpenShiftMockServer;
+import io.fabric8.openshift.client.server.mock.OpenShiftMockServerExtension;
+import io.vertx.core.http.HttpHeaders;
+import io.vertx.core.json.JsonObject;
+import okhttp3.mockwebserver.RecordedRequest;
 
 @ExtendWith({MockitoExtension.class, OpenShiftMockServerExtension.class})
 @EnableOpenShiftMockClient(https = false, crud = false)
@@ -140,7 +149,7 @@ class OpenShiftAuthManagerTest {
             AUTHORIZATION_URL + BASE_OAUTH_QUERY_PARAMETERS;
     static final String CUSTOM_EXPECTED_LOGIN_REDIRECT_URL =
             AUTHORIZATION_URL + CUSTOM_OAUTH_QUERY_PARAMETERS;
-    static final String EXPECTED_LOGOUT_REDIRECT_URL = BASE_URL + "/logout";
+    static final String OAUTH_LOGOUT_URL = BASE_URL + "/logout";
 
     OpenShiftAuthManager mgr;
     @Mock Environment env;
@@ -518,7 +527,7 @@ class OpenShiftAuthManagerTest {
     }
 
     @Test
-    void shouldReturnLogoutRedirectUrl() throws Exception {
+    void shouldCallLogoutEndpoint() throws Exception {
         Resource<OAuthAccessToken> token = Mockito.mock(Resource.class);
         NonNamespaceOperation<OAuthAccessToken, OAuthAccessTokenList, Resource<OAuthAccessToken>>
                 tokens = Mockito.mock(NonNamespaceOperation.class);
@@ -530,24 +539,50 @@ class OpenShiftAuthManagerTest {
         Mockito.when(client.getHttpClient()).thenReturn(httpClient);
         Mockito.when(client.getMasterUrl()).thenReturn(new URL("https://example.com"));
 
-        HttpRequest.Builder requestBuilder = Mockito.mock(HttpRequest.Builder.class);
-        Mockito.when(requestBuilder.uri(Mockito.any(URI.class))).thenReturn(requestBuilder);
-        Mockito.when(requestBuilder.header(Mockito.anyString(), Mockito.anyString()))
-                .thenReturn(requestBuilder);
+        HttpRequest.Builder metaRequestBuilder = Mockito.mock(HttpRequest.Builder.class);
+        Mockito.when(metaRequestBuilder.uri(any(URI.class))).thenReturn(metaRequestBuilder);
+        Mockito.when(metaRequestBuilder.header(Mockito.anyString(), Mockito.anyString()))
+                .thenReturn(metaRequestBuilder);
 
-        HttpRequest request = Mockito.mock(HttpRequest.class);
-        Mockito.when(requestBuilder.build()).thenReturn(request);
-        Mockito.when(httpClient.newHttpRequestBuilder()).thenReturn(requestBuilder);
+        HttpRequest metaRequest = Mockito.mock(HttpRequest.class);
+        Mockito.when(metaRequestBuilder.build()).thenReturn(metaRequest);
 
-        HttpResponse<String> resp = Mockito.mock(HttpResponse.class);
-        Mockito.when(resp.body()).thenReturn(OAUTH_METADATA);
+        HttpResponse<String> metaResp = Mockito.mock(HttpResponse.class);
+        Mockito.when(metaResp.body()).thenReturn(OAUTH_METADATA);
 
-        Mockito.when(httpClient.sendAsync(request, String.class))
-                .thenReturn(CompletableFuture.completedFuture(resp));
+        Mockito.when(httpClient.sendAsync(metaRequest, String.class))
+                .thenReturn(CompletableFuture.completedFuture(metaResp));
 
-        String logoutRedirectUrl = mgr.logout(() -> "Bearer myToken").get();
+        HttpRequest.Builder oauthRequestBuilder = Mockito.mock(HttpRequest.Builder.class);
+        Mockito.when(oauthRequestBuilder.uri(any(URI.class))).thenReturn(oauthRequestBuilder);
+        Mockito.when(oauthRequestBuilder.header(Mockito.anyString(), Mockito.anyString()))
+                .thenReturn(oauthRequestBuilder);
+        Mockito.when(oauthRequestBuilder.post(anyMap())).thenReturn(oauthRequestBuilder);
 
-        MatcherAssert.assertThat(logoutRedirectUrl, Matchers.equalTo(EXPECTED_LOGOUT_REDIRECT_URL));
+        HttpRequest oauthRequest = Mockito.mock(HttpRequest.class);
+        Mockito.when(oauthRequestBuilder.build()).thenReturn(oauthRequest);
+        
+        HttpResponse<String> oauthResp = Mockito.mock(HttpResponse.class);
+        Mockito.when(oauthResp.isSuccessful()).thenReturn(true);
+
+        Mockito.when(httpClient.newHttpRequestBuilder())
+                .thenReturn(metaRequestBuilder, oauthRequestBuilder);
+        Mockito.when(httpClient.sendAsync(oauthRequest, String.class))
+                .thenReturn(CompletableFuture.completedFuture(oauthResp));
+
+        List<String> cookies = List.of("abcde=12345", "fghij=67890");
+        mgr.logout(() -> "Bearer myToken", () -> cookies).get();
+
+        Mockito.verify(token).delete();
+        
+        Mockito.verify(metaRequestBuilder).uri(Mockito.eq(new URI("https://example.com/.well-known/oauth-authorization-server")));
+        Mockito.verify(oauthRequestBuilder).uri(Mockito.eq(new URI(OAUTH_LOGOUT_URL)));
+        Mockito.verify(oauthRequestBuilder).header(Mockito.eq(HttpHeaders.COOKIE.toString()),
+                Mockito.eq("abcde=12345"));
+        Mockito.verify(oauthRequestBuilder).header(Mockito.eq(HttpHeaders.COOKIE.toString()),
+                Mockito.eq("fghij=67890"));
+        Mockito.verify(oauthRequestBuilder).post(Mockito.eq(Collections.emptyMap()));
+        Mockito.verify(httpClient).sendAsync(oauthRequest, String.class);
     }
 
     @Test
@@ -570,24 +605,41 @@ class OpenShiftAuthManagerTest {
         Mockito.when(client.getHttpClient()).thenReturn(httpClient);
         Mockito.when(client.getMasterUrl()).thenReturn(new URL("https://example.com"));
 
-        HttpRequest.Builder requestBuilder = Mockito.mock(HttpRequest.Builder.class);
-        Mockito.when(requestBuilder.uri(Mockito.any(URI.class))).thenReturn(requestBuilder);
-        Mockito.when(requestBuilder.header(Mockito.anyString(), Mockito.anyString()))
-                .thenReturn(requestBuilder);
+        HttpRequest.Builder metaRequestBuilder = Mockito.mock(HttpRequest.Builder.class);
+        Mockito.when(metaRequestBuilder.uri(any(URI.class))).thenReturn(metaRequestBuilder);
+        Mockito.when(metaRequestBuilder.header(Mockito.anyString(), Mockito.anyString()))
+                .thenReturn(metaRequestBuilder);
 
-        HttpRequest request = Mockito.mock(HttpRequest.class);
-        Mockito.when(requestBuilder.build()).thenReturn(request);
-        Mockito.when(httpClient.newHttpRequestBuilder()).thenReturn(requestBuilder);
+        HttpRequest metaRequest = Mockito.mock(HttpRequest.class);
+        Mockito.when(metaRequestBuilder.build()).thenReturn(metaRequest);
 
-        HttpResponse<String> resp = Mockito.mock(HttpResponse.class);
-        Mockito.when(resp.body()).thenReturn(OAUTH_METADATA);
+        HttpResponse<String> metaResp = Mockito.mock(HttpResponse.class);
+        Mockito.when(metaResp.body()).thenReturn(OAUTH_METADATA);
 
-        Mockito.when(httpClient.sendAsync(request, String.class))
-                .thenReturn(CompletableFuture.completedFuture(resp));
+        Mockito.when(httpClient.sendAsync(metaRequest, String.class))
+                .thenReturn(CompletableFuture.completedFuture(metaResp));
+
+        HttpRequest.Builder oauthRequestBuilder = Mockito.mock(HttpRequest.Builder.class);
+        Mockito.when(oauthRequestBuilder.uri(any(URI.class))).thenReturn(oauthRequestBuilder);
+        Mockito.when(oauthRequestBuilder.header(Mockito.anyString(), Mockito.anyString()))
+                .thenReturn(oauthRequestBuilder);
+        Mockito.when(oauthRequestBuilder.post(anyMap())).thenReturn(oauthRequestBuilder);
+
+        HttpRequest oauthRequest = Mockito.mock(HttpRequest.class);
+        Mockito.when(oauthRequestBuilder.build()).thenReturn(oauthRequest);
+        
+        HttpResponse<String> oauthResp = Mockito.mock(HttpResponse.class);
+        Mockito.when(oauthResp.isSuccessful()).thenReturn(true);
+
+        Mockito.when(httpClient.newHttpRequestBuilder())
+                .thenReturn(metaRequestBuilder, oauthRequestBuilder);
+        Mockito.when(httpClient.sendAsync(oauthRequest, String.class))
+                .thenReturn(CompletableFuture.completedFuture(oauthResp));
 
         Mockito.verifyNoInteractions(logger);
 
-        mgr.logout(() -> "Bearer myToken").get();
+        List<String> cookies = List.of("abcde=12345", "fghij=67890");
+        mgr.logout(() -> "Bearer myToken", () -> cookies).get();
 
         ArgumentCaptor<Exception> logCaptor = ArgumentCaptor.forClass(Exception.class);
         Mockito.verify(logger).warn(logCaptor.capture());
@@ -596,6 +648,70 @@ class OpenShiftAuthManagerTest {
                 Matchers.equalTo(
                         "io.cryostat.net.TokenNotFoundException: Token not found: [[token] some"
                                 + " reason: some message]"));
+    }
+
+    @Test
+    void shouldThrowWhenLogoutFails() throws Exception {
+        Resource<OAuthAccessToken> token = Mockito.mock(Resource.class);
+        NonNamespaceOperation<OAuthAccessToken, OAuthAccessTokenList, Resource<OAuthAccessToken>>
+                tokens = Mockito.mock(NonNamespaceOperation.class);
+
+        Mockito.when(client.oAuthAccessTokens()).thenReturn(tokens);
+        Mockito.when(tokens.withName(Mockito.anyString())).thenReturn(token);
+        Mockito.when(token.delete()).thenReturn(List.of());
+
+        Mockito.when(client.getHttpClient()).thenReturn(httpClient);
+        Mockito.when(client.getMasterUrl()).thenReturn(new URL("https://example.com"));
+
+        HttpRequest.Builder metaRequestBuilder = Mockito.mock(HttpRequest.Builder.class);
+        Mockito.when(metaRequestBuilder.uri(any(URI.class))).thenReturn(metaRequestBuilder);
+        Mockito.when(metaRequestBuilder.header(Mockito.anyString(), Mockito.anyString()))
+                .thenReturn(metaRequestBuilder);
+
+        HttpRequest metaRequest = Mockito.mock(HttpRequest.class);
+        Mockito.when(metaRequestBuilder.build()).thenReturn(metaRequest);
+
+        HttpResponse<String> metaResp = Mockito.mock(HttpResponse.class);
+        Mockito.when(metaResp.body()).thenReturn(OAUTH_METADATA);
+
+        Mockito.when(httpClient.sendAsync(metaRequest, String.class))
+                .thenReturn(CompletableFuture.completedFuture(metaResp));
+
+        HttpRequest.Builder oauthRequestBuilder = Mockito.mock(HttpRequest.Builder.class);
+        Mockito.when(oauthRequestBuilder.uri(any(URI.class))).thenReturn(oauthRequestBuilder);
+        Mockito.when(oauthRequestBuilder.header(Mockito.anyString(), Mockito.anyString()))
+                .thenReturn(oauthRequestBuilder);
+        Mockito.when(oauthRequestBuilder.post(anyMap())).thenReturn(oauthRequestBuilder);
+
+        HttpRequest oauthRequest = Mockito.mock(HttpRequest.class);
+        Mockito.when(oauthRequestBuilder.build()).thenReturn(oauthRequest);
+        
+        HttpResponse<String> oauthResp = Mockito.mock(HttpResponse.class);
+        Mockito.when(oauthResp.isSuccessful()).thenReturn(false);
+        Mockito.when(oauthResp.code()).thenReturn(404);
+
+        Mockito.when(httpClient.newHttpRequestBuilder())
+                .thenReturn(metaRequestBuilder, oauthRequestBuilder);
+        Mockito.when(httpClient.sendAsync(oauthRequest, String.class))
+                .thenReturn(CompletableFuture.completedFuture(oauthResp));
+
+        List<String> cookies = List.of("abcde=12345", "fghij=67890");
+        ;
+
+        ExecutionException ex = assertThrows(ExecutionException.class,
+                () -> mgr.logout(() -> "Bearer myToken", () -> cookies).get());
+        MatcherAssert.assertThat(ex.getMessage(),
+                Matchers.equalTo(KubernetesClientException.class.getName() + ": OAuth server returned HTTP 404 response"));
+        
+        Mockito.verify(token).delete();
+        Mockito.verify(metaRequestBuilder).uri(Mockito.eq(new URI("https://example.com/.well-known/oauth-authorization-server")));
+        Mockito.verify(oauthRequestBuilder).uri(Mockito.eq(new URI(OAUTH_LOGOUT_URL)));
+        Mockito.verify(oauthRequestBuilder).header(Mockito.eq(HttpHeaders.COOKIE.toString()),
+                Mockito.eq("abcde=12345"));
+        Mockito.verify(oauthRequestBuilder).header(Mockito.eq(HttpHeaders.COOKIE.toString()),
+                Mockito.eq("fghij=67890"));
+        Mockito.verify(oauthRequestBuilder).post(Mockito.eq(Collections.emptyMap()));
+        Mockito.verify(httpClient).sendAsync(oauthRequest, String.class);
     }
 
     @ParameterizedTest

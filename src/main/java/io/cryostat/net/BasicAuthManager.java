@@ -42,6 +42,7 @@ import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
@@ -166,8 +167,9 @@ class BasicAuthManager extends AbstractAuthManager {
     }
 
     @Override
-    public Optional<String> logout(Supplier<String> httpHeaderProvider) {
-        return Optional.empty();
+    public Future<Void> logout(
+            Supplier<String> httpHeaderProvider, Supplier<List<String>> sessionProvider) {
+        return CompletableFuture.completedFuture(null);
     }
 
     private Pair<String, String> splitCredentials(String credentials) {

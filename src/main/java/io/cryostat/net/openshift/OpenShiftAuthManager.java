@@ -95,6 +95,7 @@ import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.fabric8.kubernetes.client.http.HttpClient;
 import io.fabric8.kubernetes.client.http.HttpRequest;
 import io.fabric8.openshift.client.OpenShiftClient;
+import io.vertx.core.http.HttpHeaders;
 import jdk.jfr.Category;
 import jdk.jfr.Event;
 import jdk.jfr.Label;
@@ -234,13 +235,39 @@ public class OpenShiftAuthManager extends AbstractAuthManager {
     }
 
     @Override
-    public Optional<String> logout(Supplier<String> httpHeaderProvider)
-            throws ExecutionException, InterruptedException, TokenNotFoundException {
+    public Future<Void> logout(
+            Supplier<String> httpHeaderProvider, Supplier<List<String>> sessionProvider)
+            throws ExecutionException, InterruptedException, TokenNotFoundException, URISyntaxException {
 
         String token = getTokenFromHttpHeader(httpHeaderProvider.get());
         deleteToken(token);
 
-        return Optional.of(this.computeLogoutRedirectEndpoint().get());
+        List<String> cookies = sessionProvider.get();
+
+        String logoutEndpoint = this.computeLogoutRedirectEndpoint().get();
+
+        OpenShiftClient client = serviceAccountClient.get();
+        HttpClient httpClient = client.getHttpClient();
+        HttpRequest.Builder reqBuilder =
+                httpClient.newHttpRequestBuilder().uri(new URIBuilder(logoutEndpoint).build()).post(Collections.emptyMap());
+        cookies.stream().forEach(cookie -> reqBuilder.header(HttpHeaders.COOKIE.toString(), cookie));
+        HttpRequest httpRequest = reqBuilder.build();
+
+        return httpClient
+                .sendAsync(httpRequest, String.class)
+                .thenCompose(
+                        res -> {
+                            try {
+                                logger.info("LOGOUT REQUEST HEADERS: " + httpRequest.headers());
+                                logger.info("LOGOUT RESPONSE: " + res.message()); // XXX
+                                if (!res.isSuccessful()) {
+                                    throw new KubernetesClientException("OAuth server returned HTTP " + res.code() + " response");
+                                }
+                                return CompletableFuture.completedStage(null);
+                            } catch (Exception e) {
+                                return CompletableFuture.failedStage(e);
+                            }
+                        });
     }
 
     @Override

@@ -38,13 +38,18 @@
 
 package io.cryostat.net.web.http.api.v2;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
 import io.cryostat.MainModule;
 import io.cryostat.configuration.CredentialsManager;
 import io.cryostat.core.log.Logger;
 import io.cryostat.net.AuthManager;
 import io.cryostat.net.security.ResourceAction;
+import io.fabric8.kubernetes.client.KubernetesClientException;
 
 import com.google.gson.Gson;
 import io.vertx.core.MultiMap;
@@ -80,6 +85,8 @@ public class LogoutPostHandlerTest {
         HttpServerRequest req = Mockito.mock(HttpServerRequest.class);
         MultiMap headers = MultiMap.caseInsensitiveMultiMap();
         headers.set(HttpHeaders.AUTHORIZATION, "abcd1234==");
+        headers.add(HttpHeaders.COOKIE, "abcde=12345");
+        headers.add(HttpHeaders.COOKIE, "fghij=67890");
         Mockito.lenient().when(req.headers()).thenReturn(headers);
         Mockito.lenient().when(ctx.request()).thenReturn(req);
     }
@@ -100,8 +107,8 @@ public class LogoutPostHandlerTest {
     }
 
     @Test
-    void shouldHandleLogoutWhenNoRedirectNecessary() throws Exception {
-        Mockito.when(auth.logout(Mockito.any())).thenReturn(Optional.empty());
+    void shouldHandleSuccessfulLogout() throws Exception {
+        Mockito.when(auth.logout(Mockito.any(), Mockito.any())).thenReturn(CompletableFuture.completedFuture(null));
 
         IntermediateResponse<Void> response = handler.handle(requestParams);
         MatcherAssert.assertThat(response.getStatusCode(), Matchers.equalTo(200));
@@ -109,19 +116,9 @@ public class LogoutPostHandlerTest {
     }
 
     @Test
-    void shouldSendLogoutRedirectUrlWhenPresent() throws Exception {
-        Mockito.when(auth.logout(Mockito.any()))
-                .thenReturn(Optional.of("https://oauth.redirect-url/logout"));
+    void shouldHandleUnsuccessfulLogout() throws Exception {
+        Mockito.when(auth.logout(Mockito.any(), Mockito.any())).thenThrow(new ExecutionException(new KubernetesClientException("TEST")));
 
-        IntermediateResponse<Void> response = handler.handle(requestParams);
-
-        MatcherAssert.assertThat(response.getStatusCode(), Matchers.equalTo(302));
-        MatcherAssert.assertThat(
-                response.getHeaders().get("X-Location"),
-                Matchers.equalTo("https://oauth.redirect-url/logout"));
-        MatcherAssert.assertThat(
-                response.getHeaders().get("access-control-expose-headers"),
-                Matchers.equalTo("Location"));
-        MatcherAssert.assertThat(response.getBody(), Matchers.equalTo(null));
+        assertThrows(ExecutionException.class, () -> handler.handle(requestParams));
     }
 }

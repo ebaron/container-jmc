@@ -38,6 +38,8 @@
 package io.cryostat.net;
 
 import java.io.IOException;
+import java.net.URISyntaxException;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -56,8 +58,9 @@ public interface AuthManager {
             Supplier<String> headerProvider, Set<ResourceAction> resourceActions)
             throws ExecutionException, InterruptedException;
 
-    Optional<String> logout(Supplier<String> httpHeaderProvider)
-            throws ExecutionException, InterruptedException, IOException, TokenNotFoundException;
+    Future<Void> logout(
+            Supplier<String> httpHeaderProvider, Supplier<List<String>> sessionProvider)
+            throws ExecutionException, InterruptedException, IOException, TokenNotFoundException, URISyntaxException;
 
     Future<Boolean> validateToken(
             Supplier<String> tokenProvider, Set<ResourceAction> resourceActions);
